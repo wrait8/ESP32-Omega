@@ -31,4 +31,37 @@ void startKarmaAttack() {
           for (int i = 0; i < len; i++) {
             ssid += (char)payload[tagStart + 2 + i];
           }
-          if (ssid.length() > 
+          if (ssid.length() > 0) {
+            // Add to seen probes
+            bool found = false;
+            for (auto& s : seenProbes) {
+              if (s == ssid) { found = true; break; }
+            }
+            if (!found) {
+              seenProbes.push_back(ssid);
+              Serial.printf("Karma: Heard probe for: %s\n", ssid.c_str());
+              // In full implementation, would create AP here
+            }
+          }
+          break;
+        }
+        tagStart += 2 + len;
+      }
+    }
+  });
+  Serial.println("Karma attack started");
+}
+
+void stopKarmaAttack() {
+  karmaActive = false;
+  esp_wifi_set_promiscuous(false);
+  esp_wifi_set_promiscuous_rx_cb(NULL);
+  Serial.println("Karma attack stopped");
+}
+
+void runKarma() {
+  // Karma runs via callback, just need to keep alive
+  delay(10);
+}
+
+#endif
