@@ -1,4 +1,4 @@
-// main.ino - ESP32-Omega Unified Toolkit
+// main.ino - ESP32-Omega Unified Toolkit (Updated)
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_wifi_types.h>
@@ -32,7 +32,6 @@ typedef struct {
   bool pmkidCaptureRunning;
   bool evilTwinRunning;
   bool deauthGuardRunning;
-  bool saeOverflowRunning;
   bool snifferRunning;
 } FeatureState;
 
@@ -64,7 +63,6 @@ int currentTarget = -1;
 #include "pmkid.h"
 #include "eviltwin.h"
 #include "deauthguard.h"
-#include "saeoverflow.h"
 #include "sniffer.h"
 
 // ============= FUNCTION PROTOTYPES =============
@@ -171,24 +169,6 @@ void processCommand(String cmd) {
   }
   else if (command == "pmkid") {
     handlePMKIDCommand(args);
-  }
-  else if (command == "sae") {
-    if (args == "stop") {
-      stopSAEOverflow();
-      state.saeOverflowRunning = false;
-      Serial.println("SAE overflow stopped");
-    } else if (args.length() > 0) {
-      int idx = args.toInt();
-      if (idx >= 0 && idx < networkCount) {
-        startSAEOverflow(idx);
-        state.saeOverflowRunning = true;
-        Serial.printf("SAE overflow started on %s\n", networks[idx].ssid.c_str());
-      } else {
-        Serial.println("Invalid network index");
-      }
-    } else {
-      Serial.println("Usage: sae <idx> | stop");
-    }
   }
   
   // BLE Attacks
@@ -349,7 +329,6 @@ void printStatus() {
   Serial.printf("PMKID: %s\n", state.pmkidCaptureRunning ? "RUNNING" : "STOPPED");
   Serial.printf("Evil Twin: %s\n", state.evilTwinRunning ? "RUNNING" : "STOPPED");
   Serial.printf("Deauth Guard: %s\n", state.deauthGuardRunning ? "RUNNING" : "STOPPED");
-  Serial.printf("SAE Overflow: %s\n", state.saeOverflowRunning ? "RUNNING" : "STOPPED");
   Serial.printf("Sniffer: %s\n", state.snifferRunning ? "RUNNING" : "STOPPED");
 }
 
@@ -434,7 +413,7 @@ void printHelp() {
   Serial.println("  deauth stop       - Stop deauth attack");
   Serial.println("  beacon [count]    - Start beacon spam (default: 100)");
   Serial.println("  beacon stop       - Stop beacon spam");
-  Serial.println("  eviltwin <idx>    - Start Evil Twin attack");
+  Serial.println("  eviltwin <idx>    - Start Evil Twin (AP spoof + deauth)");
   Serial.println("  eviltwin stop     - Stop Evil Twin");
   Serial.println("  karma on          - Start Karma attack");
   Serial.println("  karma off         - Stop Karma attack");
@@ -449,10 +428,8 @@ void printHelp() {
   Serial.println("  pmkid stop        - Stop PMKID capture");
   Serial.println("  pmkid status      - Show PMKID status");
   Serial.println("  pmkid list        - List captured PMKIDs");
-  Serial.println("  pmkid export      - Export PMKIDs (format: hashcat)");
+  Serial.println("  pmkid export      - Export PMKIDs (Hashcat format)");
   Serial.println("  pmkid clear       - Clear PMKID database");
-  Serial.println("  sae <idx>         - SAE overflow (WPA3 crash)");
-  Serial.println("  sae stop          - Stop SAE overflow");
   Serial.println("");
   Serial.println("--- BLE Attacks ---");
   Serial.println("  sourapple [on/off] - SourApple iOS crash");
@@ -513,10 +490,8 @@ void setup() {
   // Load saved config
   loadConfig();
   
-  // Initialize Karma
+  // Initialize modules
   initKarmaModule();
-  
-  // Initialize PMKID
   initPMKIDModule();
   
   Serial.println("\nReady.");
@@ -552,9 +527,6 @@ void loop() {
   }
   if (state.deauthGuardRunning) {
     runDeauthGuard();
-  }
-  if (state.saeOverflowRunning) {
-    runSAEOverflow();
   }
   if (state.snifferRunning) {
     runSniffer();
