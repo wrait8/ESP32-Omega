@@ -49,27 +49,24 @@ void runSamSpam() {
   
   int idx = random(sizeof(watchIDs) / sizeof(watchIDs[0]));
   
-  // Random MAC
   uint8_t addr[6];
   for (int i = 0; i < 6; i++) addr[i] = esp_random() & 0xFF;
-  addr[5] = (addr[5] & 0x3F) | 0xC0;  // Make it random static
+  addr[5] = (addr[5] & 0x3F) | 0xC0;
   esp_ble_gap_set_rand_addr(addr);
   
-  // Set device name
   esp_ble_gap_set_device_name(watchNames[idx]);
   
-  // Build advertising data
   size_t prependLen = sizeof(PREPEND);
-  size_t totalLen = 2 + prependLen + 1;  // Company ID (2) + prepend + watch ID
+  size_t totalLen = 2 + prependLen + 1;
   
-  uint8_t* advData = (uint8_t*)malloc(totalLen + 2);  // +2 for flags
+  uint8_t* advData = (uint8_t*)malloc(totalLen + 2);
   int i = 0;
   advData[i++] = 0x02;
   advData[i++] = 0x01;
   advData[i++] = 0x06;
   
   advData[i++] = totalLen + 1;
-  advData[i++] = 0xFF;  // Manufacturer specific
+  advData[i++] = 0xFF;
   advData[i++] = 0x75;
   advData[i++] = 0x00;
   
@@ -77,7 +74,6 @@ void runSamSpam() {
   i += prependLen;
   advData[i++] = watchIDs[idx];
   
-  // Start advertising
   esp_ble_gap_config_adv_data_raw(advData, i);
   esp_ble_gap_start_advertising(&samAdvParams);
   delay(200);
