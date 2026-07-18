@@ -1,6 +1,7 @@
-// ESP32-Omega Unified Toolkit
+// main.ino - ESP32-Omega Unified Toolkit
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_wifi_types.h>
 #include <esp_bt.h>
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
@@ -8,14 +9,14 @@
 #include <esp_bt_main.h>
 #include <esp_gap_ble_api.h>
 #include <SPIFFS.h>
-#include <DNSServer.h>
-#include <WebServer.h>
+#include <vector>
+#include <map>
+#include <set>
 
 // ============= CONFIGURATION =============
 #define VERSION "v2.0"
 #define SERIAL_BAUD 115200
 #define MAX_NETWORKS 50
-#define DEAUTH_WINDOW 5  // seconds
 
 // ============= GLOBAL OBJECTS =============
 BLEAdvertising *pAdvertising;
@@ -33,7 +34,6 @@ typedef struct {
   bool deauthGuardRunning;
   bool saeOverflowRunning;
   bool snifferRunning;
-  bool spooferRunning;
 } FeatureState;
 
 FeatureState state = {false};
@@ -47,12 +47,15 @@ struct NetworkInfo {
   bool isWPA2;
   bool isWPA3;
   bool isOpen;
+  wifi_auth_mode_t authMode;
 };
 
 NetworkInfo networks[MAX_NETWORKS];
 int networkCount = 0;
+int currentTarget = -1;
 
-// ============= INCLUDE ALL MODULES =============
+// ============= INCLUDE MODULES =============
+#include "commands.h"
 #include "deauther.h"
 #include "beaconspam.h"
 #include "sourapple.h"
@@ -63,15 +66,24 @@ int networkCount = 0;
 #include "deauthguard.h"
 #include "saeoverflow.h"
 #include "sniffer.h"
-#include "spoofer.h"
-#include "commands.h"
+
+// ============= FUNCTION PROTOTYPES =============
+void scanNetworks();
+void listNetworks();
+void selectNetwork(int idx);
+void printStatus();
+void showCredentials();
+void saveConfig();
+void loadConfig();
+void processCommand(String cmd);
+void serialCLI();
+void printHelp();
 
 // ============= COMMAND PARSER =============
 void processCommand(String cmd) {
   cmd.trim();
   if (cmd.length() == 0) return;
   
-  // Split command and args
   int spaceIdx = cmd.indexOf(' ');
   String command = (spaceIdx == -1) ? cmd : cmd.substring(0, spaceIdx);
   String args = (spaceIdx == -1) ? "" : cmd.substring(spaceIdx + 1);
@@ -155,35 +167,10 @@ void processCommand(String cmd) {
     }
   }
   else if (command == "karma") {
-    if (args == "on") {
-      startKarmaAttack();
-      state.karmaRunning = true;
-      Serial.println("Karma attack started");
-    } else if (args == "off") {
-      stopKarmaAttack();
-      state.karmaRunning = false;
-      Serial.println("Karma attack stopped");
-    } else {
-      Serial.println("Usage: karma [on/off]");
-    }
+    handleKarmaCommand(args);
   }
   else if (command == "pmkid") {
-    if (args == "stop") {
-      stopPMKIDCapture();
-      state.pmkidCaptureRunning = false;
-      Serial.println("PMKID capture stopped");
-    } else if (args.length() > 0) {
-      int idx = args.toInt();
-      if (idx >= 0 && idx < networkCount) {
-        startPMKIDCapture(idx);
-        state.pmkidCaptureRunning = true;
-        Serial.printf("PMKID capture started on %s\n", networks[idx].ssid.c_str());
-      } else {
-        Serial.println("Invalid network index");
-      }
-    } else {
-      Serial.println("Usage: pmkid <idx> | stop");
-    }
+    handlePMKIDCommand(args);
   }
   else if (command == "sae") {
     if (args == "stop") {
@@ -231,23 +218,6 @@ void processCommand(String cmd) {
       Serial.println("Usage: samspam [on/off]");
     }
   }
-  else if (command == "spoofer") {
-    if (args == "on") {
-      startSpoofer();
-      state.spooferRunning = true;
-      Serial.println("Spoofer started");
-    } else if (args == "off") {
-      stopSpoofer();
-      state.spooferRunning = false;
-      Serial.println("Spoofer stopped");
-    } else if (args.length() > 0 && args.startsWith("set")) {
-      // Handle spoofer set commands
-      handleSpooferCommand(args);
-    } else {
-      Serial.println("Usage: spoofer [on/off | set <type>]");
-      Serial.println("Types: airpods, airpodspro, airpodsmax, appletv, homepod, galaxy");
-    }
-  }
   
   // Sniffer & Detection
   else if (command == "sniffer") {
@@ -272,15 +242,21 @@ void processCommand(String cmd) {
       stopDeauthGuard();
       state.deauthGuardRunning = false;
       Serial.println("Deauth guard stopped");
+    } else if (args == "status") {
+      printDeauthGuardStatus();
     } else {
-      Serial.println("Usage: guard [on/off]");
+      Serial.println("Usage: guard [on/off | status]");
     }
   }
   else if (command == "show") {
     if (args == "creds" || args == "credentials") {
       showCredentials();
+    } else if (args == "karma") {
+      printKarmaStatus();
+    } else if (args == "pmkid") {
+      printPMKIDStatus();
     } else {
-      Serial.println("Usage: show creds");
+      Serial.println("Usage: show [creds | karma | pmkid]");
     }
   }
   
@@ -324,13 +300,17 @@ void scanNetworks() {
     networks[i].bssid = WiFi.BSSIDstr(i);
     networks[i].channel = WiFi.channel(i);
     networks[i].rssi = WiFi.RSSI(i);
+    networks[i].authMode = WiFi.encryptionType(i);
     
-    wifi_auth_mode_t auth = WiFi.encryptionType(i);
-    networks[i].isWPA2 = (auth == WIFI_AUTH_WPA2_PSK || auth == WIFI_AUTH_WPA2_ENTERPRISE);
-    networks[i].isWPA3 = (auth == WIFI_AUTH_WPA3_PSK || auth == WIFI_AUTH_WPA2_WPA3_PSK);
-    networks[i].isOpen = (auth == WIFI_AUTH_OPEN);
+    networks[i].isWPA2 = (networks[i].authMode == WIFI_AUTH_WPA2_PSK || 
+                          networks[i].authMode == WIFI_AUTH_WPA2_ENTERPRISE);
+    networks[i].isWPA3 = (networks[i].authMode == WIFI_AUTH_WPA3_PSK || 
+                          networks[i].authMode == WIFI_AUTH_WPA2_WPA3_PSK);
+    networks[i].isOpen = (networks[i].authMode == WIFI_AUTH_OPEN);
     
-    String type = networks[i].isWPA3 ? "WPA3" : (networks[i].isWPA2 ? "WPA2" : (networks[i].isOpen ? "OPEN" : "WPA"));
+    String type = networks[i].isWPA3 ? "WPA3" : 
+                  (networks[i].isWPA2 ? "WPA2" : 
+                  (networks[i].isOpen ? "OPEN" : "WPA"));
     
     Serial.printf("[%2d] %-24s CH:%2d  %4d  %s\n", 
       i, networks[i].ssid.c_str(), networks[i].channel, 
@@ -344,13 +324,14 @@ void listNetworks() {
     Serial.println("No networks found. Run 'scan' first.");
     return;
   }
-  scanNetworks(); // Re-scan to refresh
+  scanNetworks();
 }
 
 void selectNetwork(int idx) {
   if (idx >= 0 && idx < networkCount) {
     currentTarget = idx;
-    Serial.printf("Selected: %s\n", networks[idx].ssid.c_str());
+    Serial.printf("Selected: %s (CH:%d)\n", 
+      networks[idx].ssid.c_str(), networks[idx].channel);
   }
 }
 
@@ -370,14 +351,30 @@ void printStatus() {
   Serial.printf("Deauth Guard: %s\n", state.deauthGuardRunning ? "RUNNING" : "STOPPED");
   Serial.printf("SAE Overflow: %s\n", state.saeOverflowRunning ? "RUNNING" : "STOPPED");
   Serial.printf("Sniffer: %s\n", state.snifferRunning ? "RUNNING" : "STOPPED");
-  Serial.printf("Spoofer: %s\n", state.spooferRunning ? "RUNNING" : "STOPPED");
 }
 
 void showCredentials() {
   Serial.println("\n=== Captured Credentials ===");
-  // This would read from SPIFFS
-  // For now, just show a message
-  Serial.println("No credentials captured yet.");
+  // Evil Twin credentials
+  extern std::vector<String> capturedCreds;
+  if (capturedCreds.size() > 0) {
+    Serial.println("Evil Twin Captured:");
+    for (size_t i = 0; i < capturedCreds.size(); i++) {
+      Serial.printf("  [%d] %s\n", i+1, capturedCreds[i].c_str());
+    }
+  }
+  // PMKID captures
+  extern std::vector<PMKIDEntry> pmkidList;
+  if (pmkidList.size() > 0) {
+    Serial.println("PMKID Captured:");
+    for (size_t i = 0; i < pmkidList.size(); i++) {
+      Serial.printf("  [%d] PMKID: %s (BSSID: %s)\n", 
+        i+1, pmkidList[i].pmkid.c_str(), pmkidList[i].bssid.c_str());
+    }
+  }
+  if (capturedCreds.size() == 0 && pmkidList.size() == 0) {
+    Serial.println("No credentials captured yet.");
+  }
 }
 
 void saveConfig() {
@@ -412,15 +409,81 @@ void loadConfig() {
   config.close();
 }
 
-// ============= SERIAL CLI LOOP =============
 void serialCLI() {
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     if (cmd.length() > 0) {
       processCommand(cmd);
+      Serial.print("> ");
     }
   }
+}
+
+void printHelp() {
+  Serial.println("\n=== ESP32-Omega Commands ===");
+  Serial.println("");
+  Serial.println("--- Network Commands ---");
+  Serial.println("  scan              - Scan for Wi-Fi networks");
+  Serial.println("  list              - List scanned networks");
+  Serial.println("  select <idx>      - Select network by index");
+  Serial.println("");
+  Serial.println("--- Wi-Fi Attacks ---");
+  Serial.println("  deauth <idx>      - Deauth attack on network");
+  Serial.println("  deauth all        - Deauth all networks");
+  Serial.println("  deauth stop       - Stop deauth attack");
+  Serial.println("  beacon [count]    - Start beacon spam (default: 100)");
+  Serial.println("  beacon stop       - Stop beacon spam");
+  Serial.println("  eviltwin <idx>    - Start Evil Twin attack");
+  Serial.println("  eviltwin stop     - Stop Evil Twin");
+  Serial.println("  karma on          - Start Karma attack");
+  Serial.println("  karma off         - Stop Karma attack");
+  Serial.println("  karma auto        - Auto Karma mode");
+  Serial.println("  karma spear <SSID> - Spear attack");
+  Serial.println("  karma status      - Show Karma status");
+  Serial.println("  karma list        - List detected probes");
+  Serial.println("  karma add <SSID>  - Add custom probe");
+  Serial.println("  karma remove <SSID> - Remove custom probe");
+  Serial.println("  karma clear       - Clear custom probes");
+  Serial.println("  pmkid <idx>       - Capture PMKID from AP");
+  Serial.println("  pmkid stop        - Stop PMKID capture");
+  Serial.println("  pmkid status      - Show PMKID status");
+  Serial.println("  pmkid list        - List captured PMKIDs");
+  Serial.println("  pmkid export      - Export PMKIDs (format: hashcat)");
+  Serial.println("  pmkid clear       - Clear PMKID database");
+  Serial.println("  sae <idx>         - SAE overflow (WPA3 crash)");
+  Serial.println("  sae stop          - Stop SAE overflow");
+  Serial.println("");
+  Serial.println("--- BLE Attacks ---");
+  Serial.println("  sourapple [on/off] - SourApple iOS crash");
+  Serial.println("  samspam [on/off]  - Samsung BLE spam");
+  Serial.println("");
+  Serial.println("--- Sniffer & Detection ---");
+  Serial.println("  sniffer [on/off]  - Packet sniffer");
+  Serial.println("  guard [on/off]    - Deauth guard (detector)");
+  Serial.println("  guard status      - Show guard statistics");
+  Serial.println("  show creds        - Show captured credentials");
+  Serial.println("  show karma        - Show karma stats");
+  Serial.println("  show pmkid        - Show PMKID stats");
+  Serial.println("");
+  Serial.println("--- System Commands ---");
+  Serial.println("  status            - Show current status");
+  Serial.println("  version           - Show version");
+  Serial.println("  save              - Save config to SPIFFS");
+  Serial.println("  reboot            - Reboot ESP32");
+  Serial.println("  help / ?          - Show this menu");
+  Serial.println("");
+  Serial.println("--- Examples ---");
+  Serial.println("  scan");
+  Serial.println("  deauth 3");
+  Serial.println("  eviltwin 3");
+  Serial.println("  sourapple on");
+  Serial.println("  karma on");
+  Serial.println("  pmkid 3");
+  Serial.println("  guard on");
+  Serial.println("  status");
+  Serial.println("  show creds");
+  Serial.println("----------------------------------------");
 }
 
 // ============= SETUP =============
@@ -450,6 +513,12 @@ void setup() {
   // Load saved config
   loadConfig();
   
+  // Initialize Karma
+  initKarmaModule();
+  
+  // Initialize PMKID
+  initPMKIDModule();
+  
   Serial.println("\nReady.");
   Serial.print("> ");
 }
@@ -473,10 +542,10 @@ void loop() {
     runSamSpam();
   }
   if (state.karmaRunning) {
-    runKarma();
+    runKarmaLoop();
   }
   if (state.pmkidCaptureRunning) {
-    runPMKIDCapture();
+    runPMKIDLoop();
   }
   if (state.evilTwinRunning) {
     runEvilTwin();
@@ -489,17 +558,6 @@ void loop() {
   }
   if (state.snifferRunning) {
     runSniffer();
-  }
-  if (state.spooferRunning) {
-    runSpoofer();
-  }
-  
-  // Print prompt if serial CLI is active
-  static unsigned long lastPrompt = 0;
-  if (millis() - lastPrompt > 5000) {
-    lastPrompt = millis();
-    // Uncomment to show prompt periodically
-    // Serial.print("> ");
   }
   
   delay(10);
